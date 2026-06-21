@@ -28,6 +28,7 @@ function reset_game()
  rot=0
  shake=0
  spawn_t=20
+ btimer=120
  t=0
  flash=0
 end
@@ -81,6 +82,11 @@ function update_play()
   spawn_obj()
   spawn_t=max(10,26-d*3)
  end
+ btimer-=1
+ if btimer<=0 then
+  spawn_wall()
+  btimer=max(60,150-d*14)
+ end
  -- move objects
  local osp=1.0+d*0.18
  for o in all(objs) do
@@ -89,10 +95,13 @@ function update_play()
   if oz>zp and o.z<=zp then
    -- compare angle around the ring (shortest way, with wrap)
    local da=abs(o.ang-pa) da=min(da,1-da)
-   local sr=pr*(f/zp)       -- rim radius in screen px
-   if o.kind=="gem" then
+   if o.kind=="wall" then
+    if da<o.hw then hit_mine() end   -- inside the ridge arc
+   elseif o.kind=="gem" then
+    local sr=pr*(f/zp)       -- rim radius in screen px
     if da<mid(0.05,11/(6.2832*sr),0.3) then collect(o) o.dead=true end
    else
+    local sr=pr*(f/zp)
     if da<mid(0.04,8/(6.2832*sr),0.25) then hit_mine() o.dead=true end
    end
   end
@@ -120,6 +129,19 @@ function spawn_obj()
  }
  o.kind = rnd(1)<0.34 and "gem" or "mine"
  add(objs,o)
+end
+
+function spawn_wall()
+ local d=8-rt
+ -- a mountain ridge spanning an arc of the wall
+ local np=3+flr(rnd(3))      -- 3..5 peaks
+ local hs={}
+ for i=1,np do hs[i]=0.4+rnd(0.55) end
+ add(objs,{
+  kind="wall", ang=rnd(1),
+  hw=0.055+rnd(0.05)+d*0.004, -- arc half-width (grows w/ difficulty)
+  np=np, hs=hs, z=110,
+ })
 end
 
 function collect(o)
@@ -198,11 +220,15 @@ function draw_objs()
   local o=objs[i]
   local z=o.z
   if z>1 then
-   local s=f/z
-   local x,y=64+o.x*s,64+o.y*s
-   local r=o.r*s
-   if o.kind=="gem" then draw_gem(x,y,r)
-   else draw_mine(x,y,r,o) end
+   if o.kind=="wall" then
+    draw_wall(o)
+   else
+    local s=f/z
+    local x,y=64+o.x*s,64+o.y*s
+    local r=o.r*s
+    if o.kind=="gem" then draw_gem(x,y,r)
+    else draw_mine(x,y,r,o) end
+   end
   end
  end
  for p in all(pops) do
@@ -224,6 +250,30 @@ function draw_gem(x,y,r)
  if r>2 then
   fill_diamond(x,y-r*0.2,r*0.5,7)
   pset(x-r*0.3,y-r*0.3,7)
+ end
+end
+
+function draw_wall(o)
+ local s=f/o.z
+ local h=rt*0.55             -- max peak height (world units)
+ local a1=o.ang-o.hw
+ local stp=(o.hw*2)/o.np
+ for i=1,o.np do
+  local bl=a1+stp*(i-1)      -- base-left angle
+  local br=a1+stp*i          -- base-right angle
+  local am=(bl+br)*0.5       -- apex angle
+  local hh=h*o.hs[i]
+  -- base sits on the tunnel wall (radius rt), apex points inward
+  local lx,ly=64+cos(bl)*rt*s,64+sin(bl)*rt*s
+  local rx,ry=64+cos(br)*rt*s,64+sin(br)*rt*s
+  local ax,ay=64+cos(am)*(rt-hh)*s,64+sin(am)*(rt-hh)*s
+  trifill(lx,ly,rx,ry,ax,ay,4)   -- rock
+  line(lx,ly,ax,ay,15)           -- sunlit edge
+  line(rx,ry,ax,ay,2)            -- shadow edge
+  if o.hs[i]>0.72 then           -- snow cap on tall peaks
+   trifill(ax,ay,ax+(lx-ax)*0.32,ay+(ly-ay)*0.32,
+                 ax+(rx-ax)*0.32,ay+(ry-ay)*0.32,7)
+  end
  end
 end
 
