@@ -9,9 +9,17 @@ function _init()
  f=90      -- focal length
  zp=12     -- ship plane depth
  best=0
+ inv=false  -- invincibility cheat (pause-menu toggle)
+ menuitem(1,"invincible: off",toggle_inv)
  music(0)  -- start bg loop
  reset_game()
  state="title"
+end
+
+function toggle_inv()
+ inv=not inv
+ menuitem(1,"invincible: "..(inv and "on" or "off"))
+ return true  -- keep the pause menu open after toggling
 end
 
 function reset_game()
@@ -32,6 +40,14 @@ function reset_game()
  shake=0
  spawn_t=20
  btimer=120
+ dtimer=240
+ zone=1
+ zonelen=1400     -- frames of descent per zone
+ depth=0          -- 0..100 progress to the gate
+ zbanner=90
+ gatetimer=0
+ inboss=false
+ boss=nil
  t=0
  flash=0
 end
@@ -49,6 +65,11 @@ function _update60()
   end
  elseif state=="play" then
   update_play()
+ elseif state=="gate" then
+  gatetimer-=1
+  rot+=0.012
+  move_rings(2.5)
+  if gatetimer<=0 then start_boss() end
  elseif state=="over" then
   rot+=0.002
   move_rings(0.5)
@@ -66,7 +87,17 @@ function move_rings(spd)
 end
 
 function update_play()
- local d=(8-rt)            -- difficulty 0..5.4
+ if zbanner>0 then zbanner-=1 end
+ local d=min(9,(8-rt)+(zone-1)*1.2)  -- difficulty rises each zone
+ -- descend toward the guild gate (paused during a boss)
+ if not inboss then
+  depth+=100/zonelen
+  if depth>=100 then
+   state="gate" gatetimer=150
+   objs={} bolts={}
+   return
+  end
+ end
  -- survival score
  if t%6==0 then score+=1 end
  -- ship orbits the rim (left/right rotate, wraps full circle)
@@ -75,35 +106,54 @@ function update_play()
  if btn(1) then pa+=asp end
  pa%=1
  pr=max(1.2,rt-0.9)        -- orbit radius tracks the shrinking rim
- -- tunnel slowly shrinks
- rt=max(minrt,rt-0.0011)
+ -- tunnel slowly shrinks (held steady during a boss)
+ if not inboss then rt=max(minrt,rt-0.0011) end
  rot+=0.004
  move_rings(1.2+d*0.12)
  -- spawning
- spawn_t-=1
- if spawn_t<=0 then
-  spawn_obj()
-  spawn_t=max(10,26-d*3)
- end
- btimer-=1
- if btimer<=0 then
-  spawn_wall()
-  btimer=max(60,150-d*14)
+ if inboss then
+  update_boss(d)
+ else
+  spawn_t-=1
+  if spawn_t<=0 then
+   spawn_obj()
+   spawn_t=max(10,26-d*3)
+  end
+  btimer-=1
+  if btimer<=0 then
+   spawn_wall()
+   btimer=max(60,150-d*14)
+  end
+  dtimer-=1
+  if dtimer<=0 then
+   spawn_drone()
+   dtimer=max(90,220-d*18)
+  end
  end
  -- move objects
  local osp=1.0+d*0.18
  for o in all(objs) do
   local oz=o.z
   o.z-=osp
+  if o.kind=="drone" then
+   if o.flash>0 then o.flash-=1 end
+   -- home toward the player's angle, locking harder as it nears
+   local turn=0.003+(1-o.z/110)*0.006
+   local dd=pa-o.ang
+   if dd>0.5 then dd-=1 elseif dd<-0.5 then dd+=1 end
+   o.ang+=mid(-turn,dd,turn)
+  elseif o.kind=="fire" then
+   o.ang=(o.ang+o.sweep)%1     -- sweeping barrier
+  end
   if oz>zp and o.z<=zp then
    -- compare angle around the ring (shortest way, with wrap)
    local da=abs(o.ang-pa) da=min(da,1-da)
-   if o.kind=="wall" then
-    if da<o.hw then hit_mine() end   -- inside the ridge arc
+   if o.kind=="wall" or o.kind=="fire" then
+    if da<o.hw then hit_mine() end   -- inside a barrier arc
    elseif o.kind=="gem" then
     local sr=pr*(f/zp)       -- rim radius in screen px
     if da<mid(0.05,11/(6.2832*sr),0.3) then collect(o) o.dead=true end
-   else
+   else                      -- mine or drone
     local sr=pr*(f/zp)
     if da<mid(0.04,8/(6.2832*sr),0.25) then hit_mine() o.dead=true end
    end
@@ -115,9 +165,9 @@ function update_play()
  end
  -- firing (gems = ammo): hold z/x
  firecd-=1
- if (btn(4) or btn(5)) and firecd<=0 and energy>=10 then
+ if (btn(4) or btn(5)) and firecd<=0 and energy>=5 then
   add(bolts,{ang=pa,z=zp})
-  energy-=10 firecd=7 sfx(6)
+  energy-=5 firecd=7 sfx(6)
  end
  -- bolts travel down the spoke into the tunnel
  for b in all(bolts) do
@@ -128,16 +178,35 @@ function update_play()
     local da=abs(b.ang-o.ang) da=min(da,1-da)
     if o.kind=="wall" then
      if da<o.hw and abs(b.z-o.z)<5 then b.dead=true end   -- absorbed by rock
+    elseif o.kind=="fire" then
+     -- energy curtain: bolts pass through
     elseif da<0.05 and abs(b.z-o.z)<6 then
-     o.dead=true b.dead=true
+     b.dead=true
      local s=f/o.z
-     if o.kind=="gem" then          -- wasted a crystal
-      add(pops,{x=64+cos(o.ang)*pr*s,y=64+sin(o.ang)*pr*s,life=18,txt="lost",col=5})
-     else                           -- killed a drone/mine
-      score+=15 sfx(1)
-      add(pops,{x=64+cos(o.ang)*pr*s,y=64+sin(o.ang)*pr*s,life=20,txt="+15",col=10})
+     local sx,sy=64+cos(o.ang)*pr*s,64+sin(o.ang)*pr*s
+     if o.kind=="drone" then        -- armored: needs 3 hits
+      o.hp-=1 o.flash=4 sfx(6)
+      if o.hp<=0 then
+       o.dead=true score+=40 sfx(1)
+       add(pops,{x=sx,y=sy,life=22,txt="+40",col=10})
+      end
+     elseif o.kind=="gem" then      -- wasted a crystal
+      o.dead=true
+      add(pops,{x=sx,y=sy,life=18,txt="lost",col=5})
+     else                          -- killed a mine
+      o.dead=true score+=15 sfx(1)
+      add(pops,{x=sx,y=sy,life=20,txt="+15",col=10})
      end
     end
+   end
+  end
+  -- bolt reaches the guardian's rotating core
+  if inboss and not b.dead and b.z>=boss.z then
+   b.dead=true
+   local cda=abs(b.ang-boss.coreang) cda=min(cda,1-cda)
+   if cda<0.06 then
+    boss.hp-=1 boss.flash=4 sfx(1)
+    if boss.hp<=0 then win_boss() end
    end
   end
  end
@@ -165,6 +234,75 @@ function spawn_obj()
  add(objs,o)
 end
 
+function next_zone()
+ zone+=1
+ depth=0
+ zbanner=110
+ rt=min(8,rt+1.2)        -- breathing room past the gate
+ objs={} bolts={}
+ inboss=false boss=nil
+ spawn_t=30 btimer=120 dtimer=160
+ state="play"
+end
+
+function start_boss()
+ state="play"
+ inboss=true
+ objs={} bolts={}
+ boss={hp=24,maxhp=24,coreang=0,corespin=0.0022,
+       dtmr=50,ftmr=80,gtmr=60,flash=0,z=100}
+end
+
+function update_boss(d)
+ local p2=boss.hp<=boss.maxhp/2          -- enraged phase
+ boss.coreang=(boss.coreang+(p2 and 0.004 or boss.corespin))%1
+ if boss.flash>0 then boss.flash-=1 end
+ -- drone waves
+ boss.dtmr-=1
+ if boss.dtmr<=0 then
+  spawn_drone()
+  boss.dtmr=p2 and 50 or 90
+ end
+ -- sweeping fire curtains
+ boss.ftmr-=1
+ if boss.ftmr<=0 then
+  spawn_fire(p2)
+  boss.ftmr=p2 and 80 or 140
+ end
+ -- shed crystals so you can keep firing
+ boss.gtmr-=1
+ if boss.gtmr<=0 then
+  local ang=rnd(1)
+  add(objs,{kind="gem",ang=ang,x=cos(ang)*pr,y=sin(ang)*pr,
+            z=110,r=0.7,spin=rnd(1)})
+  boss.gtmr=110
+ end
+end
+
+function spawn_fire(wide)
+ local dir=rnd(1)<0.5 and 1 or -1
+ add(objs,{kind="fire",ang=rnd(1),z=110,
+           hw=wide and 0.16 or 0.10,
+           sweep=dir*(wide and 0.006 or 0.004)})
+end
+
+function win_boss()
+ score+=500
+ flash=12 shake=16 sfx(1)
+ add(pops,{x=64,y=64,life=40,txt="guardian down +500",col=11})
+ inboss=false boss=nil
+ next_zone()
+end
+
+function zonename()
+ local n={"outer conduit","cargo spur","toll relay","reactor spine","core vault"}
+ return n[min(zone,#n)]
+end
+
+function spawn_drone()
+ add(objs,{kind="drone",ang=rnd(1),z=110,hp=3,flash=0,spin=rnd(1)})
+end
+
 function spawn_wall()
  local d=8-rt
  -- a mountain ridge spanning an arc of the wall
@@ -188,6 +326,7 @@ function collect(o)
 end
 
 function hit_mine()
+ if inv then return end   -- cheat: no damage
  lives-=1
  rt=max(minrt,rt-0.3)
  shake=12 flash=6
@@ -208,15 +347,24 @@ function _draw()
  if shake>0 then ox=rnd(4)-2 oy=rnd(4)-2 end
  camera(ox,oy)
  draw_tunnel()
- if state!="title" then draw_objs() draw_bolts() draw_ship() end
+ if state!="title" then
+  if inboss then draw_boss() end
+  draw_objs() draw_bolts() draw_ship()
+ end
  camera()
  if flash>0 then
   for i=0,15 do pal(i,8) end
   rectfill(0,0,127,127,8) pal()
  end
- if state=="title" then draw_title()
- else draw_hud() end
- if state=="over" then draw_over() end
+ if state=="title" then
+  draw_title()
+ else
+  draw_hud()
+  if zbanner>0 then draw_banner() end
+  if state=="play" and depth>80 then draw_warning() end
+  if state=="gate" then draw_gate() end
+  if state=="over" then draw_over() end
+ end
 end
 
 function ring_col(z)
@@ -257,6 +405,10 @@ function draw_objs()
   if z>1 then
    if o.kind=="wall" then
     draw_wall(o)
+   elseif o.kind=="fire" then
+    draw_fire(o)
+   elseif o.kind=="drone" then
+    draw_drone(o)
    else
     local s=f/z
     local x,y=64+o.x*s,64+o.y*s
@@ -285,6 +437,81 @@ function draw_gem(x,y,r)
  if r>2 then
   fill_diamond(x,y-r*0.2,r*0.5,7)
   pset(x-r*0.3,y-r*0.3,7)
+ end
+end
+
+function draw_fire(o)
+ local s=f/o.z
+ local n=7
+ local stp=(o.hw*2)/n
+ local a1=o.ang-o.hw
+ local h=1.7
+ for i=0,n-1 do
+  local al,ar=a1+stp*i,a1+stp*(i+1)
+  local cl,sl=cos(al),sin(al)
+  local cr,sr=cos(ar),sin(ar)
+  local olx,oly=64+cl*rt*s,64+sl*rt*s
+  local orx,ory=64+cr*rt*s,64+sr*rt*s
+  local ilx,ily=64+cl*(rt-h)*s,64+sl*(rt-h)*s
+  local irx,iry=64+cr*(rt-h)*s,64+sr*(rt-h)*s
+  local col=(i+flr(t*0.6))%2==0 and 9 or 10
+  trifill(olx,oly,orx,ory,irx,iry,col)
+  trifill(olx,oly,irx,iry,ilx,ily,col)
+  line(ilx,ily,irx,iry,t%3==0 and 7 or 10)  -- hot inner edge
+ end
+end
+
+function draw_boss()
+ local x,y=64,64
+ local hot=boss.flash>0
+ local rr=30
+ -- rotating armor spokes
+ for k=0,5 do
+  local a=k/6+t*0.003
+  line(x,y,x+cos(a)*rr,y+sin(a)*rr,hot and 7 or 6)
+ end
+ circ(x,y,rr,5)
+ circfill(x,y,rr-3,hot and 7 or 5)
+ circfill(x,y,rr-7,1)
+ -- rotating weak core (shoot this)
+ local ca=boss.coreang
+ local cx2=x+cos(ca)*(rr*0.5)
+ local cy2=y+sin(ca)*(rr*0.5)
+ local pul=2+sin(t/30)
+ circfill(cx2,cy2,5+pul,8)
+ circfill(cx2,cy2,3+pul,hot and 7 or 10)
+ circfill(cx2,cy2,1+pul*0.5,7)
+ -- central eye
+ circfill(x,y,5,2)
+ circfill(x,y,3,boss.hp<=boss.maxhp/2 and 8 or 9)
+ pset(x,y,7)
+end
+
+function draw_drone(o)
+ local s=f/o.z
+ local x=64+cos(o.ang)*pr*s
+ local y=64+sin(o.ang)*pr*s
+ local r=mid(1.5,0.95*s,28)
+ local hot=o.flash>0
+ -- rotating claws
+ local sp=o.spin+t*0.02
+ for k=0,3 do
+  local a=sp+k/4
+  local cx2,cy2=x+cos(a)*r*1.35,y+sin(a)*r*1.35
+  line(x,y,cx2,cy2,5)
+  circfill(cx2,cy2,max(1,r*0.22),hot and 7 or 13)
+ end
+ -- armored hull
+ circfill(x,y,r,hot and 7 or 6)
+ circfill(x,y,r*0.72,5)
+ -- red scanner eye, staring outward at the player
+ local ex=x+cos(o.ang)*r*0.25
+ local ey=y+sin(o.ang)*r*0.25
+ circfill(ex,ey,r*0.42,hot and 7 or 8)
+ circfill(ex,ey,r*0.22,hot and 7 or 14)
+ -- hp pips above the hull
+ if r>4 then
+  for i=1,o.hp do pset(x-2+i*2,y-r-2,11) end
  end
 end
 
@@ -395,6 +622,7 @@ end
 function draw_hud()
  print("score "..score,3,3,7)
  print("best "..best,3,10,5)
+ if inv then print("inv",52,3,t%16<8 and 11 or 3) end
  for i=1,lives do
   local x=124-(i-1)*9
   trifill(x,7,x-3,12,x+3,12,12)
@@ -407,7 +635,21 @@ function draw_hud()
  if ew>0 then rectfill(20,19,20+ew,22,energy>20 and 11 or 8) end
  -- shrink warning
  if rt<minrt+0.6 and t%30<15 then
-  print("tunnel critical!",30,118,8)
+  print("tunnel critical!",34,108,8)
+ end
+ if inboss then
+  -- guardian integrity
+  print("guardian",2,119,8)
+  rectfill(0,126,127,127,1)
+  local hw2=flr(boss.hp/boss.maxhp*128)
+  if hw2>0 then rectfill(0,126,hw2,127,8) end
+ else
+  -- descent progress to the guild gate
+  print("sector "..zone,2,119,6)
+  print("gate",109,119,depth>80 and 8 or 5)
+  rectfill(0,126,127,127,1)
+  local dw=flr(depth/100*128)
+  if dw>0 then rectfill(0,126,dw,127,depth>80 and (t%8<4 and 8 or 10) or 12) end
  end
 end
 
@@ -431,6 +673,29 @@ function draw_over()
  print("best  "..best,46,68,10)
  if score>=best and score>0 then print("new best!",47,76,11) end
  if t>30 and t%30<20 then print("\faz/x\f7 = retry",42,84,7) end
+end
+
+function cprint(s,y,c)
+ print(s,64-#s*2,y,c)
+end
+
+function draw_banner()
+ rectfill(0,52,127,72,0)
+ line(0,52,127,52,12) line(0,72,127,72,12)
+ cprint("sector "..zone,56,7)
+ cprint(zonename(),64,12)
+end
+
+function draw_warning()
+ if t%20<12 then cprint("guardian ahead",70,8) end
+end
+
+function draw_gate()
+ rectfill(0,46,127,82,0)
+ rect(0,46,127,82,8)
+ cprint("guild gate",54,10)
+ if gatetimer%20<12 then cprint("guardian detected",64,8) end
+ cprint("breaching...",73,7)
 end
 __sfx__
 00060000244502b450304650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
