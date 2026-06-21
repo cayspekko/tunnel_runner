@@ -22,7 +22,10 @@ function reset_game()
  rt=8.0         -- tunnel world radius
  minrt=2.6
  objs={}
+ bolts={}
  pops={}
+ energy=40        -- weapon charge (from gems)
+ firecd=0
  ringz={}
  for i=1,8 do ringz[i]=i*13 end
  rot=0
@@ -110,6 +113,37 @@ function update_play()
  for o in all(objs) do
   if o.dead then del(objs,o) end
  end
+ -- firing (gems = ammo): hold z/x
+ firecd-=1
+ if (btn(4) or btn(5)) and firecd<=0 and energy>=10 then
+  add(bolts,{ang=pa,z=zp})
+  energy-=10 firecd=7 sfx(6)
+ end
+ -- bolts travel down the spoke into the tunnel
+ for b in all(bolts) do
+  b.z+=5
+  if b.z>110 then b.dead=true end
+  for o in all(objs) do
+   if not o.dead then
+    local da=abs(b.ang-o.ang) da=min(da,1-da)
+    if o.kind=="wall" then
+     if da<o.hw and abs(b.z-o.z)<5 then b.dead=true end   -- absorbed by rock
+    elseif da<0.05 and abs(b.z-o.z)<6 then
+     o.dead=true b.dead=true
+     local s=f/o.z
+     if o.kind=="gem" then          -- wasted a crystal
+      add(pops,{x=64+cos(o.ang)*pr*s,y=64+sin(o.ang)*pr*s,life=18,txt="lost",col=5})
+     else                           -- killed a drone/mine
+      score+=15 sfx(1)
+      add(pops,{x=64+cos(o.ang)*pr*s,y=64+sin(o.ang)*pr*s,life=20,txt="+15",col=10})
+     end
+    end
+   end
+  end
+ end
+ for b in all(bolts) do
+  if b.dead then del(bolts,b) end
+ end
  -- popups
  for p in all(pops) do
   p.y-=0.5 p.life-=1
@@ -146,6 +180,7 @@ end
 
 function collect(o)
  score+=25
+ energy=min(100,energy+22)  -- crystal scrap powers the gun
  rt=min(8,rt+0.06)       -- gems give breathing room
  sfx(0)
  local s=f/zp
@@ -173,7 +208,7 @@ function _draw()
  if shake>0 then ox=rnd(4)-2 oy=rnd(4)-2 end
  camera(ox,oy)
  draw_tunnel()
- if state!="title" then draw_objs() draw_ship() end
+ if state!="title" then draw_objs() draw_bolts() draw_ship() end
  camera()
  if flash>0 then
   for i=0,15 do pal(i,8) end
@@ -232,7 +267,7 @@ function draw_objs()
   end
  end
  for p in all(pops) do
-  print(p.txt,p.x-4,p.y,p.life%4<2 and 7 or 11)
+  print(p.txt,p.x-4,p.y,p.col or (p.life%4<2 and 7 or 11))
  end
 end
 
@@ -250,6 +285,19 @@ function draw_gem(x,y,r)
  if r>2 then
   fill_diamond(x,y-r*0.2,r*0.5,7)
   pset(x-r*0.3,y-r*0.3,7)
+ end
+end
+
+function draw_bolts()
+ for b in all(bolts) do
+  local s1=f/b.z
+  local s0=f/max(zp,b.z-7)
+  local c,s=cos(b.ang),sin(b.ang)
+  local x1,y1=64+c*pr*s1,64+s*pr*s1
+  local x0,y0=64+c*pr*s0,64+s*pr*s0
+  line(x0,y0,x1,y1,12)     -- plasma trail
+  circfill(x1,y1,1.2,7)    -- hot head
+  pset(x1,y1,10)
  end
 end
 
@@ -352,6 +400,11 @@ function draw_hud()
   trifill(x,7,x-3,12,x+3,12,12)
   pset(x,9,7)
  end
+ -- energy cell
+ print("nrg",3,18,6)
+ rect(19,18,60,23,5)
+ local ew=(energy/100)*40
+ if ew>0 then rectfill(20,19,20+ew,22,energy>20 and 11 or 8) end
  -- shrink warning
  if rt<minrt+0.6 and t%30<15 then
   print("tunnel critical!",30,118,8)
@@ -366,7 +419,8 @@ function draw_title()
  print("dodge \f8mines",42,53,7)
  print("grab \fcgems",46,61,7)
  if s then print("press \faz\f7 or \fax\f7 to fly",26,86,7) end
- print("\f6left/right = orbit",30,104,6)
+ print("\f6left/right orbit",30,100,6)
+ print("\fcgems\f6 power \faz/x\f6 fire",24,108,6)
 end
 
 function draw_over()
@@ -385,6 +439,7 @@ __sfx__
 000600001f550265502b5660000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000c00000c1300c130131300c1300f1300c130111300c1300c1300c130131300c1301413013130111300f1300c1300c130131300c1300f1300c130111300c1300c13011130131301413016130181301613013130
 000c000024720287202b720307202b72028720247201f72024720287202b7203072033720307202b7202872024720287202b720307202b72028720247201f7201f72024720287202b72030720337203772030720
+000300002d75322745186350000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __music__
 00 04054041
 
