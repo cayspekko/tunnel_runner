@@ -1039,6 +1039,27 @@ function compute_light(cc,cr)
  for tt in all(torches) do
   flood(tt.c,tt.r,torch_r,torch_r,false)
  end
+ -- bake the per-tile DARKNESS for the screen
+ -- ONCE here (incl the wall->visible-floor
+ -- scan), so the per-frame draw is just reads
+ dark={}
+ for r=cr,cr+16 do
+  for c=cc,cc+16 do
+   local lv
+   if is_opaque(c,r) then
+    lv=0
+    for nb in all(nbrs) do
+     if seen_at(c+nb[1],r+nb[2]) then
+      lv=max(lv,get_lit(c+nb[1],r+nb[2]))
+     end
+    end
+   else
+    lv=seen_at(c,r) and get_lit(c,r) or 0
+   end
+   dark[(r-lgr0)*lgw+(c-lgc0)]=
+    mid(0,flr((light_max-lv)*5/light_max)-1,4)
+  end
+ end
 end
 
 -- BFS through OPEN tiles (walls block + are
@@ -1116,36 +1137,28 @@ function is_opaque(c,r) return tile(c,r) end
 -- black -- so MORE 0-bits = darker. hence
 -- this ramps from all-1s (clear) to all-0s.
 darkpat={0xffff,0xfdfd,0xa5a5,0x0840,0x0000}
+-- read the cached darkness grid + draw it as
+-- merged horizontal RUNS (one rectfill per run
+-- of equal darkness) -> far fewer draw calls.
+-- (+0.5 on fillp = transparency: 1-bits show
+--  through, 0-bits draw black.)
 function draw_dark()
  local c0,r0=flr(camx/8),flr(camy/8)
  for r=r0,r0+16 do
-  for c=c0,c0+16 do
-   local lv
-   if is_opaque(c,r) then
-    -- a wall: take the brightest VISIBLE floor
-    -- next to it. a torch hidden behind the
-    -- wall lights only the floor on ITS side
-    -- (not seen) -> no bleed-through.
-    lv=0
-    for nb in all(nbrs) do
-     local nc,nr=c+nb[1],r+nb[2]
-     if seen_at(nc,nr) then lv=max(lv,get_lit(nc,nr)) end
-    end
+  local base=(r-lgr0)*lgw-lgc0
+  local c=c0
+  while c<=c0+16 do
+   local d=dark[base+c] or 4
+   if d<=0 then
+    c+=1
    else
-    -- a floor: only lit if you can see it
-    lv=seen_at(c,r) and get_lit(c,r) or 0
-   end
-   -- lv (0..light_max) -> darkness 0(clear)..4(black)
-   -- the -1 gives a fully-lit core that dithers
-   -- out to black at the radius edge
-   local d=mid(0,flr((light_max-lv)*5/light_max)-1,4)
-   if d>0 then
-    -- +0.5 = transparency flag, so only the
-    -- pattern's black pixels are drawn and the
-    -- rest stays see-through (this was the bug:
-    -- without it, color 0 filled the WHOLE tile)
+    local c2=c
+    while c2<c0+16 and (dark[base+c2+1] or 4)==d do
+     c2+=1
+    end
     fillp(darkpat[d+1]+0.5)
-    rectfill(c*8,r*8,c*8+7,r*8+7,0)
+    rectfill(c*8,r*8,c2*8+7,r*8+7,0)
+    c=c2+1
    end
   end
  end
