@@ -44,15 +44,19 @@ fi
 xattr -dr com.apple.quarantine "$(dirname "$(dirname "$(dirname "$PICO8")")")" 2>/dev/null || true
 
 if [ "$MODE" = "export" ]; then
-  NAME="$(basename "$CART" .p8)"
-  OUT="$DIR/carts/$NAME"
-  mkdir -p "$OUT"
-  echo "Exporting $CART -> carts/$NAME/index.html ..."
-  # PICO-8 writes index.html + index.js into carts/<name>/ (cart needs a __label__).
-  # The repo-root index.html is our own console page; it loads this in an iframe.
-  "$PICO8" "$CART" -export "$OUT/index.html"
+  # export a specific cart, or ALL .p8 in the repo root if none given
+  if [ -n "$1" ]; then CARTS=("$1"); else CARTS=("$DIR"/*.p8); fi
+  for C in "${CARTS[@]}"; do
+    NAME="$(basename "$C" .p8)"
+    OUT="$DIR/carts/$NAME"
+    mkdir -p "$OUT"
+    echo "Exporting $C -> carts/$NAME/index.html ..."
+    # PICO-8 writes index.html + index.js into carts/<name>/.
+    # The repo-root index.html is our own console page (iframe loader).
+    "$PICO8" "$C" -export "$OUT/index.html"
+  done
   echo
-  echo "Done -> carts/$NAME/ (index.html + index.js)."
+  echo "Done. carts/: $(ls "$DIR/carts" 2>/dev/null | tr '\n' ' ')"
   echo "Open the repo-root index.html (the console), or push to GitHub Pages."
   exit 0
 fi
