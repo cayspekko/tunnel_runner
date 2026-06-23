@@ -283,7 +283,9 @@ function _init()
  -- recompute allocates ZERO garbage (no GC
  -- spike on every step).
  torches={}            -- static light cells
- lit={} lit_g={}       -- light level + its gen
+ lit={} lit_g={}       -- player light + its gen
+ tlit={}               -- STATIC torch light
+                       -- (world-keyed, baked once)
  seen_g={}             -- LOS gen per tile
  dark={}               -- baked darkness grid
  lvis={}               -- flood visited gen
@@ -295,6 +297,8 @@ function _init()
  -- read player/enemies/boss + teleport
  -- markers from the map
  scan_map()
+ bake_torches()   -- torches never move, so
+                  -- compute their light ONCE
 end
 
 -- auto-size the level from painted tiles,
@@ -1037,11 +1041,10 @@ function compute_light(cc,cr)
  lgw=16+m*2 lgh=16+m*2
  lg+=1  -- new recompute generation (invalidates
         -- last frame's lit/seen with no realloc)
+ -- only the (moving) player floods per step;
+ -- torch light is baked once (see get_lit)
  if p.is_light then
   flood(flr((p.x+pw/2)/8),flr((p.y+ph/2)/8),view_r,light_r,true)
- end
- for tt in all(torches) do
-  flood(tt.c,tt.r,torch_r,torch_r,false)
  end
  -- bake per-tile darkness for the screen ONCE
  for r=cr,cr+16 do
@@ -1049,7 +1052,7 @@ function compute_light(cc,cr)
    local lv
    if is_opaque(c,r) then
     lv=0
-    for nb in all(nbrs) do
+    for ni=1,8 do local nb=nbrs[ni]
      if seen_at(c+nb[1],r+nb[2]) then
       lv=max(lv,get_lit(c+nb[1],r+nb[2]))
      end
@@ -1088,7 +1091,7 @@ function flood(sc,sr,rng,lr,ms)
   end
   if d<rng then
    local nd=d+1
-   for nb in all(nbrs) do
+   for ni=1,8 do local nb=nbrs[ni]
     local nc,nr=c+nb[1],r+nb[2]
     if nc>=lgc0 and nr>=lgr0
      and nc<lgc0+lgw and nr<lgr0+lgh then
@@ -1112,11 +1115,60 @@ function flood(sc,sr,rng,lr,ms)
  end
 end
 
+-- bake every torch's light into tlit (world
+-- keyed) ONCE -- torches never move, so this
+-- never runs again. per-step cost is then
+-- independent of how many torches you place.
+function bake_torches()
+ tlit={}
+ for tt in all(torches) do
+  flood_torch(tt.c,tt.r,torch_r)
+ end
+end
+
+function flood_torch(sc,sr,rad)
+ flg+=1
+ local g=flg
+ lvis[sc+sr*1024]=g
+ lqc[1]=sc lqr[1]=sr lqd[1]=0
+ local h,qn=1,1
+ while h<=qn do
+  local c,r,d=lqc[h],lqr[h],lqd[h] h+=1
+  local k=c+r*1024
+  local lv=rad-d
+  if (tlit[k] or 0)<lv then tlit[k]=lv end
+  if d<rad then
+   local nd=d+1
+   for ni=1,8 do local nb=nbrs[ni]
+    local nc,nr=c+nb[1],r+nb[2]
+    local k2=nc+nr*1024
+    if lvis[k2]!=g then
+     local op
+     if nc<0 or nr<0 or nc>=mapw or nr>=maph then
+      op=true
+     else
+      op=fget(mget(nc,nr),0)
+     end
+     if not op then
+      lvis[k2]=g
+      qn+=1 lqc[qn]=nc lqr[qn]=nr lqd[qn]=nd
+     end
+    end
+   end
+  end
+ end
+end
+
+-- brightest of the player's (dynamic) light
+-- and the torches' (static) baked light
 function get_lit(c,r)
- if c<lgc0 or r<lgr0
-  or c>=lgc0+lgw or r>=lgr0+lgh then return 0 end
- local i=(r-lgr0)*lgw+(c-lgc0)
- return lit_g[i]==lg and lit[i] or 0
+ local v=tlit[c+r*1024] or 0
+ if c>=lgc0 and r>=lgr0
+  and c<lgc0+lgw and r<lgr0+lgh then
+  local i=(r-lgr0)*lgw+(c-lgc0)
+  if lit_g[i]==lg and lit[i]>v then v=lit[i] end
+ end
+ return v
 end
 
 function seen_at(c,r)
