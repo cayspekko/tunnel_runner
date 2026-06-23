@@ -13,26 +13,34 @@ levels={
  {name="outer conduit", gemp=0.34, dhp=3, fire=false, dturn=1.0, dspd=1.0,
   mw=0.055, mh=0.55, mlen=2,  si=26, wi=150, di=220, boss="guardian",
   cols={1,13,12,6}, glow=12, rib=1},      -- cold blue
- {name="cargo spur",    gemp=0.34, dhp=3, fire=true,  dturn=0.5, dspd=0.7,
-  mw=0.11,  mh=0.85, mlen=18, si=22, wi=120, di=170, boss="railer",
+ {name="toll relay",    gemp=0.34, dhp=3, fire=true,  dturn=0.5, dspd=0.7,
+  mw=0.11,  mh=0.85, mlen=18, si=22, wi=120, di=170, boss="warden",
   cols={1,3,11,11}, glow=11, rib=3},      -- toxic green
- {name="toll relay",    gemp=0.32, dhp=3, fire=true,  dturn=0.6, dspd=0.75,
-  mw=0.13,  mh=0.9,  mlen=44, si=20, wi=105, di=150, boss="guardian",
+ {name="cargo spur",    gemp=0.32, dhp=3, fire=true,  dturn=0.6, dspd=0.75,
+  mw=0.13,  mh=0.9,  mlen=44, si=20, wi=105, di=150, boss="railer",
   cols={2,13,14,14}, glow=14, rib=2},     -- magenta
  {name="reactor spine", gemp=0.30, dhp=4, fire=true,  dturn=0.7, dspd=0.8,
-  mw=0.15,  mh=1.0,  mlen=54, si=18, wi=95,  di=135, boss="guardian",
+  mw=0.15,  mh=1.0,  mlen=54, si=18, wi=95,  di=135, boss="reactor",
   cols={1,4,9,10},  glow=9,  rib=4},      -- molten orange
  {name="core vault",    gemp=0.30, dhp=4, fire=true,  dturn=0.8, dspd=0.85,
-  mw=0.17,  mh=1.0,  mlen=64, si=16, wi=85,  di=120, boss="guardian",
+  mw=0.17,  mh=1.0,  mlen=64, si=16, wi=85,  di=120, boss="heart",
   cols={0,5,6,7},   glow=6,  rib=5},      -- steel void
 }
-function lvl() return levels[min(zone,#levels)] end
+function lvl() return levels[levidx or min(zone,#levels)] end
+
+-- normal run = levels in order; new game+ = randomized, never repeating
+-- the current level back-to-back (offset 1..#levels-1 guarantees a change)
+function pick_level()
+ if ngplus>0 then levidx=(levidx+flr(rnd(#levels-1)))%#levels+1
+ else levidx=min(zone,#levels) end
+end
 
 function _init()
  cx,cy=64,64
  f=90      -- focal length
  zp=12     -- ship plane depth
  best=0
+ ngplus=0   -- new game+ count (persists across runs)
  inv=false  -- invincibility cheat (pause-menu toggle)
  dbg=false  -- debug unwrap overlay
  menuitem(1,"invincible: off",toggle_inv)
@@ -77,6 +85,7 @@ function reset_game()
  btimer=120
  dtimer=240
  zone=1
+ pick_level()
  zonelen=1400     -- frames of descent per zone
  depth=0          -- 0..100 progress to the gate
  zbanner=90
@@ -115,6 +124,11 @@ function _update60()
  elseif state=="debrief" then
   rot+=0.004 move_rings(1.0)
   if btnp(4) or btnp(5) then sfx(3) next_zone() end
+ elseif state=="victory" then
+  rot+=0.003 move_rings(0.8)
+  if t>50 and (btnp(4) or btnp(5)) then
+   sfx(3) ngplus+=1 reset_game() state="brief"  -- TODO: new game+ modifiers
+  end
  elseif state=="over" then
   rot+=0.002
   move_rings(0.5)
@@ -258,13 +272,23 @@ function update_play()
     end
    end
   end
-  -- bolt reaches the guardian's rotating core
+  -- bolt reaches the boss core
   if inboss and not b.dead and b.z>=boss.z then
    b.dead=true
-   local cda=abs(b.ang-boss.coreang) cda=min(cda,1-cda)
-   if cda<0.06 then
-    boss.hp-=1 boss.flash=4 sfx(1)
-    if boss.hp<=0 then win_boss() end
+   if boss.kind=="reactor" then
+    reactor_hit(b.ang)
+   else
+    local hits
+    if boss.kind=="warden" then
+     hits = spoke_dist(b.ang)>0.045   -- only through a gap in the shield
+    else
+     local cda=abs(b.ang-boss.coreang) cda=min(cda,1-cda)
+     hits = cda<0.06
+    end
+    if hits then
+     boss.hp-=1 boss.flash=4 sfx(1)
+     if boss.hp<=0 then win_boss() end
+    end
    end
   end
  end
@@ -306,6 +330,7 @@ end
 
 function next_zone()
  zone+=1
+ pick_level()
  depth=0
  kills=0 gemct=0
  zbanner=110
@@ -328,12 +353,39 @@ function start_boss()
   boss.hp=28 boss.maxhp=28        -- tankier
   boss.cspd=0.004                 -- slow full-circle pendulum sweep
   boss.ftmr=70
+ elseif k=="warden" then
+  boss.hp=30 boss.maxhp=30
+  boss.nspoke=5 boss.curspokes=5  -- rotating shield/pinwheel of spokes
+  boss.spokeang=0 boss.spokespd=0.004 boss.spokecd=0
+  boss.dtmr=130
+ elseif k=="reactor" then
+  boss.maxhp=28 boss.hp=28
+  boss.nodes={}                   -- destroy each node to win
+  for i=1,4 do add(boss.nodes,{ang=(i-1)/4,hp=7,alive=true,flash=0}) end
+  boss.rrot=0 boss.rspd=0.0035
+  boss.pulsetmr=120 boss.beamon=0 boss.spokecd=0 boss.gtmr=90
+ elseif k=="heart" then
+  boss.hp=36 boss.maxhp=36        -- the finale
+  boss.cspd=0.003                 -- exploit point rotates
+  boss.atk=0 boss.atmr=90 boss.gtmr=85
+ end
+end
+
+function boss_gems(n)
+ boss.gtmr-=1
+ if boss.gtmr<=0 then
+  local a=rnd(1)
+  add(objs,{kind="gem",ang=a,x=cos(a)*pr,y=sin(a)*pr,z=110,r=0.7,spin=rnd(1)})
+  boss.gtmr=n
  end
 end
 
 function update_boss(d)
  local p2=boss.hp<=boss.maxhp/2          -- enraged phase
  if boss.flash>0 then boss.flash-=1 end
+ if boss.kind=="warden" then update_warden(p2) return end
+ if boss.kind=="reactor" then update_reactor(p2) return end
+ if boss.kind=="heart" then update_heart(p2) return end
  -- weak-point movement
  if boss.kind=="railer" then
   -- sweeps a full 360, eases to a stop, then reverses
@@ -356,14 +408,101 @@ function update_boss(d)
    spawn_fire(p2) boss.ftmr=p2 and 80 or 140
   end
  end
- -- shed crystals so you can keep firing
- boss.gtmr-=1
- if boss.gtmr<=0 then
-  local ang=rnd(1)
-  add(objs,{kind="gem",ang=ang,x=cos(ang)*pr,y=sin(ang)*pr,
-            z=110,r=0.7,spin=rnd(1)})
-  boss.gtmr=110
+ boss_gems(110)   -- shed crystals so you can keep firing
+end
+
+function update_heart(p2)
+ boss.coreang=(boss.coreang+boss.cspd*(p2 and 1.6 or 1))%1
+ -- COLLAPSE: the more you damage the heart, the tighter the tunnel caves in
+ local frac=boss.hp/boss.maxhp
+ local target=minrt+(8-minrt)*frac*0.9
+ rt=rt+(target-rt)*0.04
+ if frac<0.35 and t%24==0 then shake=4 end       -- chamber buckling
+ -- escalating arsenal: cycle the Guild's weapons, faster as it dies
+ boss.atmr-=1
+ if boss.atmr<=0 then
+  local a=boss.atk%3
+  if a==0 then spawn_fire(p2)
+  elseif a==1 then fire_rail(p2)
+  else spawn_drone() spawn_drone() end
+  boss.atk+=1
+  boss.atmr=max(35,(p2 and 55 or 80)-flr((1-frac)*30))
  end
+ boss_gems(85)
+end
+
+function reactor_alive()
+ local n=0
+ for nd in all(boss.nodes) do if nd.alive then n+=1 end end
+ return n
+end
+
+function update_reactor(p2)
+ local alive=reactor_alive()
+ boss.rrot=(boss.rrot+boss.rspd*(1+(4-alive)*0.3))%1   -- faster as nodes die
+ for nd in all(boss.nodes) do if nd.flash>0 then nd.flash-=1 end end
+ if boss.spokecd>0 then boss.spokecd-=1 end
+ -- overload pulse: all alive nodes fire radial beams at once
+ if boss.beamon>0 then
+  boss.beamon-=1
+  if boss.spokecd<=0 then
+   for nd in all(boss.nodes) do
+    if nd.alive then
+     local da=abs(pa-(nd.ang+boss.rrot)%1) da=min(da,1-da)
+     if da<0.05 then hit_mine() boss.spokecd=30 break end
+    end
+   end
+  end
+ else
+  boss.pulsetmr-=1
+  if boss.pulsetmr<=0 then
+   boss.beamon=25
+   boss.pulsetmr=max(70,150-(4-alive)*22)   -- pulses faster as nodes die
+  end
+ end
+ boss_gems(90)   -- crystals to refuel
+end
+
+function reactor_hit(bang)
+ for nd in all(boss.nodes) do
+  if nd.alive then
+   local cda=abs(bang-(nd.ang+boss.rrot)%1) cda=min(cda,1-cda)
+   if cda<0.05 then
+    nd.hp-=1 nd.flash=4 boss.flash=4 sfx(1)
+    if nd.hp<=0 then nd.alive=false end
+    break
+   end
+  end
+ end
+ local h=0
+ for nd in all(boss.nodes) do if nd.alive then h+=nd.hp end end
+ boss.hp=h
+ if boss.hp<=0 then win_boss() end
+end
+
+-- angular distance from `ang` to the nearest pinwheel spoke
+function spoke_dist(ang)
+ local n=boss.curspokes
+ local best=1
+ for k=0,n-1 do
+  local da=abs(ang-(boss.spokeang+k/n)) da=min(da,1-da)
+  if da<best then best=da end
+ end
+ return best
+end
+
+function update_warden(p2)
+ boss.curspokes=boss.nspoke+(p2 and 1 or 0)   -- extra blade when enraged
+ boss.spokeang=(boss.spokeang+boss.spokespd*(p2 and 1.6 or 1))%1
+ if boss.spokecd>0 then boss.spokecd-=1 end
+ -- weave hazard: a spoke clips you (brief cooldown so it's one life)
+ if boss.spokecd<=0 and spoke_dist(pa)<0.045 then
+  hit_mine() boss.spokecd=30
+ end
+ -- occasional drones + crystals to refuel
+ boss.dtmr-=1
+ if boss.dtmr<=0 then spawn_drone() boss.dtmr=p2 and 90 or 140 end
+ boss_gems(100)
 end
 
 function fire_rail(wide)
@@ -387,8 +526,15 @@ function win_boss()
  inboss=false boss=nil
  objs={} bolts={} ebolts={}
  flash=0 shake=0
- debrief_cap=false       -- recapture the freeze-frame
- state="debrief" t=0
+ if zone>=#levels and ngplus==0 then   -- first run only; NG+ is endless
+  score+=1000                 -- liberation bonus
+  best=max(best,score)
+  sfx(3)
+  state="victory" t=0
+ else
+  debrief_cap=false       -- recapture the freeze-frame
+  state="debrief" t=0
+ end
 end
 
 function zonename()
@@ -462,6 +608,8 @@ function _draw()
   draw_title()
  elseif state=="brief" then
   draw_brief()
+ elseif state=="victory" then
+  draw_victory()
  else
   draw_hud()
   if zbanner>0 then draw_banner() end
@@ -641,7 +789,93 @@ function draw_boss_railer()
  pset(x,y,7)
 end
 
+function draw_boss_warden()
+ local hot=boss.flash>0
+ local p2=boss.hp<=boss.maxhp/2
+ local x,y=64,64
+ local n=boss.curspokes
+ local hw=0.045                 -- blade half-width (matches collision)
+ local r0=6
+ local r1=rt*(f/zp)            -- out to the rim
+ local col=hot and 7 or (p2 and 8 or 9)
+ for k=0,n-1 do
+  local a=boss.spokeang+k/n
+  local apx,apy=x+cos(a)*r0,y+sin(a)*r0
+  local blx,bly=x+cos(a-hw)*r1,y+sin(a-hw)*r1
+  local brx,bry=x+cos(a+hw)*r1,y+sin(a+hw)*r1
+  trifill(apx,apy,blx,bly,brx,bry,col)             -- blade
+  line(x+cos(a)*r0,y+sin(a)*r0,x+cos(a)*r1,y+sin(a)*r1,7)  -- hot spine
+  circfill(x+cos(a)*r1,y+sin(a)*r1,2,hot and 7 or 10)      -- tip
+ end
+ -- exposed weak core (shoot through a gap)
+ local pul=2+sin(t/18)
+ circfill(x,y,5+pul,hot and 7 or 2)
+ circfill(x,y,3+pul,p2 and 8 or 11)
+ circfill(x,y,1+pul*0.5,7)
+end
+
+function draw_boss_reactor()
+ local x,y=64,64
+ local rnode=18
+ local r1=rt*(f/zp)
+ local charging=boss.beamon<=0 and boss.pulsetmr<28   -- telegraph
+ for nd in all(boss.nodes) do
+  if nd.alive then
+   local na=(nd.ang+boss.rrot)%1
+   local nx,ny=x+cos(na)*rnode,y+sin(na)*rnode
+   if boss.beamon>0 then
+    -- active beam wedge (width matches collision)
+    local hw=0.05
+    trifill(nx,ny,x+cos(na-hw)*r1,y+sin(na-hw)*r1,
+                  x+cos(na+hw)*r1,y+sin(na+hw)*r1, t%2==0 and 10 or 9)
+    line(nx,ny,x+cos(na)*r1,y+sin(na)*r1,7)
+   elseif charging and t%4<2 then
+    line(nx,ny,x+cos(na)*r1,y+sin(na)*r1,8)        -- blinking warning
+   end
+   line(x,y,nx,ny,5)                                -- spine to core
+   local nf=nd.flash>0
+   circfill(nx,ny,4,nf and 7 or 9)
+   circfill(nx,ny,2.5,nf and 7 or 10)
+   pset(nx,ny,7)
+  end
+ end
+ circfill(x,y,3,2) circfill(x,y,1,8)               -- core hub
+end
+
+function draw_boss_heart()
+ local hot=boss.flash>0
+ local p2=boss.hp<=boss.maxhp/2
+ local x,y=64,64
+ local frac=boss.hp/boss.maxhp
+ local pul=sin(t/18)*2
+ local rr=flr(24+pul)
+ -- crystal body (layered facets)
+ fill_diamond(x,y,rr,    hot and 7 or 2)
+ fill_diamond(x,y,rr-3,  hot and 7 or (p2 and 8 or 14))
+ fill_diamond(x,y,rr-9,  hot and 7 or 8)
+ fill_diamond(x,y,rr-15, 2)
+ line(x-rr,y,x,y-rr,7) line(x,y-rr,x+rr,y,7)   -- top facets lit
+ -- cracks spread as the heart fails
+ for i=1,flr((1-frac)*7) do
+  local a=i*0.137+0.05
+  line(x,y,x+cos(a)*rr,y+sin(a)*rr,0)
+ end
+ -- rotating exploit point (shoot this)
+ local ca=boss.coreang
+ local cx2=x+cos(ca)*(rr*0.58)
+ local cy2=y+sin(ca)*(rr*0.58)
+ local cp=2+sin(t/12)
+ circfill(cx2,cy2,4+cp,hot and 7 or 11)
+ circfill(cx2,cy2,2+cp,7)
+ -- failing core
+ circfill(x,y,3+pul,hot and 7 or 8)
+ pset(x,y,7)
+end
+
 function draw_boss()
+ if boss.kind=="heart" then draw_boss_heart() return end
+ if boss.kind=="reactor" then draw_boss_reactor() return end
+ if boss.kind=="warden" then draw_boss_warden() return end
  if boss.kind=="railer" then draw_boss_railer() return end
  local hot=boss.flash>0
  local p2=boss.hp<=boss.maxhp/2
@@ -876,12 +1110,28 @@ end
 function brieftext()
  local b={
   {"the guild barely","holds the outer","conduit. break","through & grab","every crystal."},
-  {"cargo spur next.","they haul stolen","energy here.","drones run thick","- stay sharp."},
   {"the toll relay","bleeds traders","dry. kill it &","tariffs fall.","mind the rocks."},
+  {"cargo spur next.","they haul stolen","energy here.","drones run thick","- stay sharp."},
   {"reactor spine.","this powers","their fleet.","heavy guard, but","worth the hit."},
   {"the core vault.","heart of their","greed. end it.","...but watch the","collapse, rebel."},
  }
- return b[min(zone,#b)]
+ return b[levidx or min(zone,#b)]
+end
+
+function draw_victory()
+ rectfill(7,11,120,118,0)
+ rect(6,10,121,119,11)
+ -- jax sign-off portrait
+ palt(0,false) sspr(0,0,48,48,10,18) palt()
+ rect(9,17,59,67,11)
+ print("the guild falls",62,20,11)
+ local ep={"the heart is","ash. the guild","is broken. the","tunnels are","ours... for now.","- cmdr jax"}
+ for i=1,#ep do print(ep[i],62,30+(i-1)*7,7) end
+ line(10,74,117,74,5)
+ print("score "..score,12,80,10)
+ print("best "..best,74,80,6)
+ print("new game +"..(ngplus+1),12,90,9)
+ if t%30<20 then cprint("press z/x to continue",106,7) end
 end
 
 function draw_brief()
@@ -897,7 +1147,8 @@ function draw_brief()
  local b=brieftext()
  for i=1,#b do print(b[i],58,30+(i-1)*9,7) end
  print("sector "..zone.."  "..zonename(),6,82,10)
- if t%30<20 then cprint("press z/x to deploy",97,6) end
+ if ngplus>0 then print("new game +"..ngplus.."  (endless)",6,90,9) end
+ if t%30<20 then cprint("press z/x to deploy",99,6) end
 end
 
 function draw_debrief()
