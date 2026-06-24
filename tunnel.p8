@@ -41,6 +41,7 @@ function _init()
  zp=12     -- ship plane depth
  best=0
  ngplus=0   -- new game+ count (persists across runs)
+ fire_down=false
  inv=false  -- invincibility cheat (pause-menu toggle)
  dbg=false  -- debug unwrap overlay
  menuitem(1,"invincible: off",toggle_inv)
@@ -102,13 +103,17 @@ end
 
 function _update60()
  t+=1
+ -- rising edge of fire (no autorepeat) so holding z/x can't skip dialogs
+ local fd=btn(4) or btn(5)
+ fire_edge=fd and not fire_down
+ fire_down=fd
  -- tunnel forward-motion eases to a near-stop at the gate/boss
  local ft=(state=="gate" or inboss) and 0.08 or 1
  flow+=(ft-flow)*0.05
  if state=="title" then
   rot+=0.003
   move_rings(1.0)
-  if btnp(4) or btnp(5) then
+  if fire_edge then
    sfx(3) reset_game() state="brief"
   end
  elseif state=="play" then
@@ -118,21 +123,30 @@ function _update60()
   rot+=0.0012+0.0035*flow
   move_rings(1.4*flow)       -- coast to a stop
   if gatetimer<=0 then start_boss() end
+ elseif state=="bossdead" then
+  deadtmr-=1
+  rot+=0.01 move_rings(1.5)
+  if shake>0 then shake-=1 end
+  if flash>0 then flash-=1 end
+  if deadtmr<=0 then
+   if deadfinal then state="victory" t=0
+   else debrief_cap=false state="debrief" t=0 end
+  end
  elseif state=="brief" then
   rot+=0.004 move_rings(1.0)
-  if btnp(4) or btnp(5) then sfx(3) zbanner=0 state="play" end
+  if fire_edge then sfx(3) zbanner=0 state="play" end
  elseif state=="debrief" then
   rot+=0.004 move_rings(1.0)
-  if btnp(4) or btnp(5) then sfx(3) next_zone() end
+  if fire_edge then sfx(3) next_zone() end
  elseif state=="victory" then
   rot+=0.003 move_rings(0.8)
-  if t>50 and (btnp(4) or btnp(5)) then
+  if t>50 and (fire_edge) then
    sfx(3) ngplus+=1 reset_game() state="brief"  -- TODO: new game+ modifiers
   end
  elseif state=="over" then
   rot+=0.002
   move_rings(0.5)
-  if t>30 and (btnp(4) or btnp(5)) then
+  if t>30 and (fire_edge) then
    sfx(3) reset_game() state="brief"
   end
  end
@@ -525,16 +539,10 @@ function win_boss()
  sfx(1)
  inboss=false boss=nil
  objs={} bolts={} ebolts={}
- flash=0 shake=0
- if zone>=#levels and ngplus==0 then   -- first run only; NG+ is endless
-  score+=1000                 -- liberation bonus
-  best=max(best,score)
-  sfx(3)
-  state="victory" t=0
- else
-  debrief_cap=false       -- recapture the freeze-frame
-  state="debrief" t=0
- end
+ shake=16 flash=10
+ deadfinal=(zone>=#levels and ngplus==0)   -- first run end vs endless
+ if deadfinal then score+=1000 best=max(best,score) sfx(3) end
+ state="bossdead" deadtmr=80 t=0           -- play the death burst first
 end
 
 function zonename()
@@ -598,6 +606,8 @@ function _draw()
  if state=="play" or state=="gate" then
   if inboss then draw_boss() end
   draw_objs() draw_ebolts() draw_bolts() draw_ship()
+ elseif state=="bossdead" then
+  draw_ship()
  end
  camera()
  if flash>0 then
@@ -610,6 +620,8 @@ function _draw()
   draw_brief()
  elseif state=="victory" then
   draw_victory()
+ elseif state=="bossdead" then
+  draw_bossdead()
  else
   draw_hud()
   if zbanner>0 then draw_banner() end
@@ -621,7 +633,7 @@ function _draw()
 end
 
 function ring_col(z)
- if inboss or state=="gate" then   -- danger chamber (universal red)
+ if inboss or state=="gate" or state=="bossdead" then   -- danger chamber (red)
   if z>50 then return 2
   elseif z>20 then return 8
   else return 14 end
@@ -634,7 +646,7 @@ function ring_col(z)
 end
 
 function draw_tunnel()
- local danger=inboss or state=="gate"
+ local danger=inboss or state=="gate" or state=="bossdead"
  -- vanishing-point glow
  circfill(cx,cy,2+sin(t/120),7)
  circ(cx,cy,4,danger and 8 or lvl().glow)
@@ -1116,6 +1128,21 @@ function brieftext()
   {"the core vault.","heart of their","greed. end it.","...but watch the","collapse, rebel."},
  }
  return b[levidx or min(zone,#b)]
+end
+
+function draw_bossdead()
+ local p=1-deadtmr/80
+ for i=0,2 do
+  local r=p*72-i*14
+  if r>0 and r<120 then circ(64,64,r,({7,10,8})[i+1]) end
+ end
+ local fr=(1-p)*22
+ if fr>0 then circfill(64,64,fr,7) circfill(64,64,fr*0.6,10) end
+ for i=1,10 do
+  local d=p*64
+  pset(64+cos(i/10)*d,64+sin(i/10)*d,({7,10,9,8})[i%4+1])
+ end
+ if deadtmr>40 then cprint("core destroyed",70,7) end
 end
 
 function draw_victory()
