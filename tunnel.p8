@@ -43,9 +43,7 @@ function _init()
  ngplus=0   -- new game+ count (persists across runs)
  fire_down=false
  inv=false  -- invincibility cheat (pause-menu toggle)
- dbg=false  -- debug unwrap overlay
  menuitem(1,"invincible: off",toggle_inv)
- menuitem(2,"debug: off",toggle_dbg)
  music(0)  -- start bg loop
  reset_game()
  state="title"
@@ -57,11 +55,6 @@ function toggle_inv()
  return true  -- keep the pause menu open after toggling
 end
 
-function toggle_dbg()
- dbg=not dbg
- menuitem(2,"debug: "..(dbg and "on" or "off"))
- return true
-end
 
 function reset_game()
  pa=0           -- ship angle around the rim (0..1 turn)
@@ -629,7 +622,6 @@ function _draw()
   if state=="gate" then draw_gate() end
   if state=="over" then draw_over() end
  end
- if dbg then draw_debug() end
 end
 
 function ring_col(z)
@@ -1201,35 +1193,6 @@ function draw_debrief()
  if t%30<20 then cprint("press z/x",88,6) end
 end
 
--- unwrapped side view: x=angle, vertical=depth z. shows each threat's
--- full z-column, the ship plane, and when the code calls it dangerous.
-function draw_debug()
- local sy0,sy1=88,126
- local zmax,zmin=70,-5
- local function yz(z) return sy0+(zmax-z)/(zmax-zmin)*(sy1-sy0) end
- rectfill(0,sy0,127,sy1,0)
- rect(0,sy0,127,sy1,5)
- line(0,yz(zp),127,yz(zp),11) print("zp",1,yz(zp)-5,11)   -- ship plane
- line(0,yz(7),127,yz(7),9)    print("edge",1,yz(7)-5,9)   -- ~screen edge
- line(0,yz(1),127,yz(1),8)    print("dead",1,yz(1)-5,8)   -- removed at z<=1
- local sx=(pa%1)*127
- line(sx,sy0+1,sx,sy1,6)
- rectfill(sx-1,yz(zp)-1,sx+1,yz(zp)+1,7)                  -- ship
- for o in all(objs) do
-  if o.kind=="wall" or o.kind=="fire" or o.kind=="rail" then
-   local ox=(o.ang%1)*127
-   local zl=o.zlen or 1
-   local w=max(1,o.hw*127)
-   local yt=mid(sy0+1,yz(o.z+zl),sy1)
-   local yb=mid(sy0+1,yz(o.z),sy1)
-   local dang
-   if o.kind=="fire" then dang=(o.z<=zp and o.z>zp-2)
-   else dang=(not o.hit) and o.z<=zp and o.z+zl>1 end
-   rectfill(ox-w,yt,ox+w,yb, o.hit and 13 or (dang and 8 or 3))
-  end
- end
- print("dbg",1,sy0+1,6)
-end
 
 function draw_title()
  local s=t%60<40
