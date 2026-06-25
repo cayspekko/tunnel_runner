@@ -86,7 +86,8 @@ charged_dmg=3
 walker_spd=0.4    -- basic enemy speed
 walker_hp=3
 
--- boss: the dash guardian (hopper)
+-- boss: the TIDE-WARDEN (hopping pulse-beast;
+-- holds the pulse-fin = the dash)
 boss_hp=20
 boss_cd=70        -- frames between hops
 boss_tele=18      -- telegraph window pre-hop
@@ -118,7 +119,10 @@ jumper_hopvy=-3.6
 -- leaks through doorways -> see a bit into
 -- the next room). everything is dark by
 -- default. sources: the player + torches.
-light_r=7       -- player light radius (tiles)
+light_r=7       -- player light radius (FULL glow)
+glow_dim=2      -- radius before you earn your
+                -- glow (the dim-start opening)
+glow_beacon=4   -- glow-pickup beacon radius
 torch_r=7       -- placed torch radius
 light_max=8     -- brightness scale (dimming)
 view_r=8        -- how far you can SEE (line of
@@ -237,6 +241,16 @@ function reset_save()
  _init()
 end
 
+-- tutorial sign messages, by scan-order index
+tutorial_msgs={
+ "move: \139 \145",
+ "jump: \151  (hold = higher)",
+ "fire: \142  (hold = charge)",
+ "wall: leap + \151 to climb",
+ "wake the wardens. take their light.",
+}
+function tut_msg(i) return tutorial_msgs[i+1] or "" end
+
 function _init()
  -- restore the map (markers get mset-cleared
  -- at scan time, so reload before re-scanning)
@@ -262,9 +276,11 @@ function _init()
   hp=player_maxhp,
   maxhp=player_maxhp,
   iframes=0,
-  -- the player emits light (toggle off for
-  -- "dark room until you get a lamp" beats)
+  -- light: you start DIM (glow_dim) and earn
+  -- your full glow (light_r) from a pickup
   is_light=true,
+  has_glow=false,
+  glow=glow_dim,
   -- ui
   msg="",
   msg_t=0,
@@ -281,6 +297,7 @@ function _init()
  enemies={}
  enemy_spawns={}  -- original spawns (to respawn on death)
  items={}
+ signs={}         -- tutorial text triggers
  particles={}
  ebullets={}      -- enemy projectiles
  boss=nil
@@ -318,6 +335,8 @@ function _init()
 
  -- load saved progress
  p.has_dash=dget(0)>0
+ p.has_glow=dget(1)>0
+ p.glow=p.has_glow and light_r or glow_dim
  p.maxhp=player_maxhp+hearts_got
  p.hp=p.maxhp
  -- the boss reward is the dash, so having it
@@ -383,13 +402,25 @@ function scan_map()
     mset(c,r,0)
    elseif s==15 then
     -- heart container: skip it if already
-    -- collected (saved in slot 1+heart_n)
-    if dget(1+heart_n)>0 then
+    -- collected (saved in slot 2+heart_n)
+    if dget(2+heart_n)>0 then
      hearts_got+=1
     else
      add(items,{x=x+4,y=y+4,kind="heart",taken=false,hid=heart_n})
     end
     heart_n+=1
+    mset(c,r,0)
+   elseif s==13 then
+    -- glow pickup (earn your light). skip if
+    -- already collected (save slot 1)
+    if dget(1)<=0 then
+     add(items,{x=x+4,y=y+4,kind="glow",taken=false})
+    end
+    mset(c,r,0)
+   elseif s==11 then
+    -- tutorial sign: an invisible text trigger.
+    -- its index (scan order) picks the message.
+    add(signs,{x=x+4,y=y+4,idx=#signs,shown=false})
     mset(c,r,0)
    elseif s==14 then
     -- torch: a static light source (stays
@@ -700,17 +731,37 @@ function _update()
    if it.kind=="dash" then
     p.has_dash=true
     dset(0,1)            -- autosave: got the dash
-    p.msg="dash boots! 2-tap a dir"
+    p.msg="pulse-fin! double-tap a dir to dash"
    elseif it.kind=="heart" then
     -- +1 max heart and refill to full
     p.maxhp+=1
     p.hp=p.maxhp
-    dset(1+it.hid,1)     -- autosave: heart taken
+    dset(2+it.hid,1)     -- autosave: heart taken
     p.msg="heart up! +1 max health"
+   elseif it.kind=="glow" then
+    -- earn your full glow (the opening beat)
+    p.has_glow=true
+    p.glow=light_r
+    lforce=true
+    dset(1,1)            -- autosave: got the glow
+    p.msg="your glow returns!"
    else
     p.msg="gate cleared -- world opens"
    end
    p.msg_t=150
+  end
+ end
+
+ -- tutorial signs: invisible triggers that
+ -- teach a lesson the first time you walk over
+ -- one (the sign's scan-order index = message)
+ for sg in all(signs) do
+  if not sg.shown
+   and abs(p.x+pw/2-sg.x)<8
+   and abs(p.y+ph/2-sg.y)<12 then
+   sg.shown=true
+   p.msg=tut_msg(sg.idx)
+   p.msg_t=140
   end
  end
 
@@ -1019,7 +1070,7 @@ function hurt_boss(dmg,bdx)
    kind="dash", taken=false,
    vy=-2.5, fall=true,
   })
-  p.msg="the guardian drops something..."
+  p.msg="the tide-warden falls. it leaves a gift..."
   p.msg_t=150
  end
 end
@@ -1103,9 +1154,17 @@ function compute_light(cc,cr)
  lg+=1  -- new recompute generation (invalidates
         -- last frame's lit/seen with no realloc)
  -- only the (moving) player floods per step;
- -- torch light is baked once (see get_lit)
+ -- torch light is baked once (see get_lit).
+ -- the player's light radius is p.glow (small
+ -- until you earn your full glow).
  if p.is_light then
-  flood(flr((p.x+pw/2)/8),flr((p.y+ph/2)/8),view_r,light_r,true)
+  flood(flr((p.x+pw/2)/8),flr((p.y+ph/2)/8),view_r,p.glow,true)
+ end
+ -- a glow pickup shines as a beacon in the dark
+ for it in all(items) do
+  if it.kind=="glow" and not it.taken then
+   flood(flr(it.x/8),flr(it.y/8),glow_beacon,glow_beacon,false)
+  end
  end
  -- bake per-tile darkness for the screen ONCE
  for r=cr,cr+16 do
@@ -1240,39 +1299,45 @@ end
 
 function is_opaque(c,r) return tile(c,r) end
 
--- darkness dither, index = darkness level
--- [1]=clear .. [5]=solid black.
--- NOTE: with fillp(p+0.5), the pattern's
--- 1-bits are TRANSPARENT and 0-bits draw
--- black -- so MORE 0-bits = darker. hence
--- this ramps from all-1s (clear) to all-0s.
-darkpat={0xffff,0xfdfd,0xa5a5,0x0840,0x0000}
--- read the cached darkness grid + draw it as
--- merged horizontal RUNS (one rectfill per run
--- of equal darkness) -> far fewer draw calls.
--- (+0.5 on fillp = transparency: 1-bits show
---  through, 0-bits draw black.)
-function draw_dark()
- local c0,r0=flr(camx/8),flr(camy/8)
- for r=r0,r0+16 do
-  local base=(r-lgr0)*lgw-lgc0
-  local c=c0
-  while c<=c0+16 do
-   local d=dark[base+c] or 4
-   if d<=0 then
-    c+=1
-   else
-    local c2=c
-    while c2<c0+16 and (dark[base+c2+1] or 4)==d do
-     c2+=1
-    end
-    fillp(darkpat[d+1]+0.5)
-    rectfill(c*8,r*8,c2*8+7,r*8+7,0)
-    c=c2+1
-   end
-  end
+-- COLOR-RAMP shading: instead of dithering
+-- black, each color fades through darker
+-- COLORS toward black. ramp[c] = the path for
+-- color c at darkness level 0(bright)..4(black).
+-- tune these to taste -- this is the "look".
+ramp={
+ [0]={0,0,0,0,0},    [1]={1,1,0,0,0},
+ [2]={2,1,1,0,0},    [3]={3,3,1,0,0},
+ [4]={4,2,1,0,0},    [5]={5,1,1,0,0},
+ [6]={6,5,1,0,0},    [7]={7,6,13,1,0},
+ [8]={8,2,1,0,0},    [9]={9,4,2,0,0},
+ [10]={10,9,4,0,0},  [11]={11,3,1,0,0},
+ [12]={12,13,1,0,0}, [13]={13,5,1,0,0},
+ [14]={14,8,2,0,0},  [15]={15,14,4,0,0},
+}
+darkpals={}
+function build_darkpals()
+ for lv=0,4 do
+  local t={}
+  for c=0,15 do t[c]=ramp[c][lv+1] end
+  darkpals[lv]=t
  end
- fillp()
+end
+build_darkpals()
+
+-- darkness level at a world tile
+function dark_at(c,r)
+ if c<lgc0 or r<lgr0
+  or c>=lgc0+lgw or r>=lgr0+lgh then return 4 end
+ return dark[(r-lgr0)*lgw+(c-lgc0)] or 4
+end
+
+-- set the draw palette to the darkness at world
+-- (x,y). returns false if fully dark (skip it).
+function dlit(x,y)
+ local d=dark_at(flr(x/8),flr(y/8))
+ if d>=4 then return false end
+ if d>0 then pal(darkpals[d]) else pal() end
+ return true
 end
 
 -->8
@@ -1283,7 +1348,7 @@ function _draw()
  update_light()
  camera(camx,camy)
 
- draw_room()
+ draw_room()      -- map + color-ramp shading
  draw_items()
  draw_enemies()
  draw_boss()
@@ -1291,7 +1356,7 @@ function _draw()
  draw_ebullets()
  draw_particles()
  draw_player()
- draw_dark()      -- darkness overlay (world)
+ pal()            -- reset before the HUD
 
  camera()
  draw_hud()
@@ -1299,13 +1364,31 @@ function _draw()
 end
 
 function draw_room()
- -- draw ONLY the on-screen tiles (~17x17),
- -- not the whole map. cost is now constant
- -- no matter how big the level gets.
+ -- draw the visible map as horizontal RUNS of
+ -- equal darkness, each through that level's
+ -- darken-palette. fully-dark runs are skipped
+ -- (the background is already black).
  local c0,r0=flr(camx/8),flr(camy/8)
- map(c0,r0,c0*8,r0*8,17,17)
- -- the exit door lights up once you have the
- -- boots (i.e. the exit is now usable)
+ for r=r0,r0+16 do
+  local base=(r-lgr0)*lgw-lgc0
+  local c=c0
+  while c<=c0+16 do
+   local d=dark[base+c] or 4
+   if d>=4 then
+    c+=1
+   else
+    local c2=c
+    while c2<c0+16 and (dark[base+c2+1] or 4)==d do
+     c2+=1
+    end
+    pal(darkpals[d])
+    map(c,r,c*8,r*8,c2-c+1,1)
+    c=c2+1
+   end
+  end
+ end
+ pal()
+ -- the exit door glows once you have the dash
  if p.has_dash then
   local col=(flr(t()*4)%2==0) and 11 or 7
   for d in all(doorb) do
@@ -1355,6 +1438,10 @@ function draw_items()
     -- glowing heart container
     circfill(x,y,5,(flr(t()*4)%2==0) and 2 or 8)
     spr(15,x-4,y-4)
+   elseif it.kind=="glow" then
+    -- pulsing glow-mote (your light to be)
+    local pr=4+(flr(t()*3)%2)
+    circfill(x,y,pr,10) circfill(x,y,pr-2,7)
    else
     -- goal flag (far side of the gate)
     rectfill(x,y-6,x,y+4,6)
@@ -1366,16 +1453,21 @@ end
 
 function draw_enemies()
  for e in all(enemies) do
-  local x,y=flr(e.x),flr(e.y)
-  if e.kind=="flyer" then
-   draw_flyer(e,x,y)
-  elseif e.kind=="jumper" then
-   draw_jumper(e,x,y)
-  else
-   draw_walker(e,x,y)
+  -- shade the enemy by the light where it is;
+  -- skip it entirely if it's in full dark
+  if dlit(e.x+e.w/2,e.y+e.h/2) then
+   local x,y=flr(e.x),flr(e.y)
+   if e.kind=="flyer" then
+    draw_flyer(e,x,y)
+   elseif e.kind=="jumper" then
+    draw_jumper(e,x,y)
+   else
+    draw_walker(e,x,y)
+   end
+   enemy_hp_pips(e,x,y)
   end
-  enemy_hp_pips(e,x,y)
  end
+ pal()
 end
 
 function draw_walker(e,x,y)
@@ -1423,6 +1515,7 @@ end
 function draw_boss()
  local b=boss
  if not b or not b.alive then return end
+ if not dlit(b.x+b.w/2,b.y+b.h/2) then return end
  local x,y=flr(b.x),flr(b.y)
  local col=2 -- dark body
  if b.flash>0 then col=7 end
@@ -1444,6 +1537,7 @@ function draw_boss()
   circfill(mx,my,3,10)
   circfill(mx,my,1,7)
  end
+ pal()
 end
 
 function draw_ebullets()
@@ -1505,7 +1599,7 @@ function draw_hud()
  -- it's dormant/hidden until then)
  if boss and boss.alive and boss.active then
   rectfill(0,122,127,127,0)
-  print("dash guardian",2,123,8)
+  print("tide-warden",2,123,8)
   rect(53,123,126,126,5)
   rectfill(54,124,54+71*boss.hp/boss.maxhp,125,8)
  else
@@ -1522,14 +1616,14 @@ function draw_heart(x,y,full)
  pset(x+2,y+3,c)
 end
 __gfx__
-0000000066666666dddddddd0000000099999999bbbbbbbb8888888822222222eeeeeeee44444444cccccccc3333333300000000111111110009900000000000
-0000000055555555c7cccccc8080080894444449bbbbbbbb8888888822222222eeeeeeee44444444cccccccc333333330bbbbbb0111111110009a90008800880
-0000000055555555cccccccc8888888894999949bbbbbbbb8888888822222222eeeeeeee44444444cccccccc333333330b0000b011111111009aaa9087788888
-0000000055555555cccccccc8888888894999949bbb00bbb8880088822200222eee00eee44400444ccc00ccc333003330b0000b01110011109aaaa9088888888
-0000000055555555cccccccc8788887894999949bbb00bbb8880088822200222eee00eee44400444ccc00ccc333003330b0000b011100111009aaa9008888880
-0000000055555555cccccccc8888888894999949bbbbbbbb8888888822222222eeeeeeee44444444cccccccc333333330b0000b0111111110009a90000888800
-0000000055555555cccccccc8888888894444449bbbbbbbb8888888822222222eeeeeeee44444444cccccccc333333330bbbbbb0111111110004400000088000
-0000000055555555cccccccc8888888899999999bbbbbbbb8888888822222222eeeeeeee44444444cccccccc3333333300000000111111110004400000000000
+0000000066666666dddddddd0000000099999999bbbbbbbb8888888822222222eeeeeeee44444444cccccccc0000000000000000000000000009900000000000
+0000000055555555c7cccccc8080080894444449bbbbbbbb8888888822222222eeeeeeee44444444cccccccc077777700bbbbbb0000990000009a90008800880
+0000000055555555cccccccc8888888894999949bbbbbbbb8888888822222222eeeeeeee44444444cccccccc070000700b0000b0009aa900009aaa9087788888
+0000000055555555cccccccc8888888894999949bbb00bbb8880088822200222eee00eee44400444ccc00ccc070000700b0000b009aaaa9009aaaa9088888888
+0000000055555555cccccccc8788887894999949bbb00bbb8880088822200222eee00eee44400444ccc00ccc077777700b0000b009aaaa90009aaa9008888880
+0000000055555555cccccccc8888888894999949bbbbbbbb8888888822222222eeeeeeee44444444cccccccc000700000b0000b0009aa9000009a90000888800
+0000000055555555cccccccc8888888894444449bbbbbbbb8888888822222222eeeeeeee44444444cccccccc007000000bbbbbb0000990000004400000088000
+0000000055555555cccccccc8888888899999999bbbbbbbb8888888822222222eeeeeeee44444444cccccccc0000000000000000000000000004400000000000
 __label__
 66666666666666666666666666666666666666666666666666666666666666666666666600000000666666666666666666666666666666666666666666666666
 55555555555555555555555555555555550555055555555555555555555555555555555500000000550555055555555555555555555555555555555555555555
@@ -1691,8 +1785,8 @@ __map__
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000006010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100050000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000101010101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000001010101010101010101010101010101010100000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000010005000b00000b0001000d000b06000b0000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000000000000001010101010101010101010101010101010101010101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
